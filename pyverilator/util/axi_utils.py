@@ -139,7 +139,7 @@ def rtlsim_multi_io(
     """
 
     if trace_file != "":
-        sim.start_vcd_trace(trace_file)
+        sim.start_vcd_trace(trace_file, auto_tracing=False)
 
     for outp in io_dict["outputs"]:
         _write_signal(sim, outp + sname + "TREADY", 1)
