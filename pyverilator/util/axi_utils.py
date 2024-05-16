@@ -109,6 +109,8 @@ def rtlsim_multi_io(
     liveness_threshold=10000,
     hook_preclk=None,
     hook_postclk=None,
+    clk_name="ap_clk",
+    clk2x_name="ap_clk2x",
 ):
     """Runs the pyverilator simulation by passing the input values to the simulation,
     toggle the clock and observing the execution time. Function contains also an
@@ -162,7 +164,7 @@ def rtlsim_multi_io(
         if hook_preclk:
             hook_preclk(sim)
         # Toggle falling edge to arrive at a delta cycle before the rising edge
-        toggle_neg_edge(sim)
+        toggle_neg_edge(sim, clk_name=clk_name, clk2x_name=clk2x_name)
         
         # examine signals, decide how to act based on that but don't update yet
         # so only _read_signal access in this block, no _write_signal
@@ -191,7 +193,7 @@ def rtlsim_multi_io(
 
         # Toggle rising edge to arrive at a delta cycle before the falling edge
         toggle_pos_edge(
-            sim, signals_to_write=signals_to_write
+            sim, clk_name=clk_name, clk2x_name=clk2x_name, signals_to_write=signals_to_write
         )
         if hook_postclk:
             hook_postclk(sim)
@@ -247,39 +249,58 @@ def _write_signal(sim, signal_name, signal_value):
 
 
 def reset_rtlsim(
-    sim, rst_name="ap_rst_n", active_low=True, clk_name="ap_clk"
+    sim, rst_name="ap_rst_n", active_low=True, clk_name="ap_clk", clk2x_name="ap_clk2x"
 ):
     _write_signal(sim, rst_name, 0 if active_low else 1)
     for _ in range(2):
-        toggle_clk(sim, clk_name)
+        toggle_clk(sim, clk_name, clk2x_name)
 
     signals_to_write = {}
     signals_to_write[rst_name] = 1 if active_low else 0
-    toggle_clk(sim, clk_name, signals_to_write)
-    toggle_clk(sim, clk_name)
+    toggle_clk(sim, clk_name, clk2x_name, signals_to_write)
+    toggle_clk(sim, clk_name, clk2x_name)
 
 
-def toggle_clk(sim, clk_name="ap_clk", signals_to_write={}):
+def toggle_clk(sim, clk_name="ap_clk", clk2x_name="ap_clk2x", signals_to_write={}):
     """Toggles the clock input in pyverilator once."""
-    toggle_neg_edge(sim, clk_name=clk_name)
+    toggle_neg_edge(sim, clk_name=clk_name, clk2x_name=clk2x_name)
     toggle_pos_edge(
-        sim, clk_name=clk_name, signals_to_write=signals_to_write
+        sim, clk_name=clk_name, clk2x_name=clk2x_name, signals_to_write=signals_to_write
     )
 
 
-def toggle_neg_edge(sim, clk_name="ap_clk"):
-    _write_signal(sim, clk_name, 0)
-    comb_update_and_trace(sim)
+def toggle_neg_edge(sim, clk_name="ap_clk", clk2x_name="ap_clk2x"):
+    if clk2x_name in sim.io:
+        _write_signal(sim, clk_name, 0)
+        _write_signal(sim, clk2x_name, 1)
+        comb_update_and_trace(sim)
+        _write_signal(sim, clk2x_name, 0)
+        comb_update_and_trace(sim)
+    else:
+        _write_signal(sim, clk_name, 0)
+        comb_update_and_trace(sim)
 
 
-def toggle_pos_edge(sim, clk_name="ap_clk", signals_to_write={}):
-    _write_signal(sim, clk_name, 1)
-    sim.eval()
-    # Write IO signals a delta cycle after rising edge
-    if bool(signals_to_write):  # if dict non-empty
-        for sig in signals_to_write.keys():
-            _write_signal(sim, sig, signals_to_write[sig])
-    comb_update_and_trace(sim)
+def toggle_pos_edge(sim, clk_name="ap_clk", clk2x_name="ap_clk2x", signals_to_write={}):
+    if clk2x_name in sim.io:
+        _write_signal(sim, clk_name, 1)
+        _write_signal(sim, clk2x_name, 1)
+        sim.eval()
+        # Write IO signals a delta cycle after rising edge
+        if bool(signals_to_write):  # if dict non-empty
+            for sig in signals_to_write.keys():
+                _write_signal(sim, sig, signals_to_write[sig])
+        comb_update_and_trace(sim)
+        _write_signal(sim, clk2x_name, 0)
+        comb_update_and_trace(sim)
+    else:
+        _write_signal(sim, clk_name, 1)
+        sim.eval()
+        # Write IO signals a delta cycle after rising edge
+        if bool(signals_to_write):  # if dict non-empty
+            for sig in signals_to_write.keys():
+                _write_signal(sim, sig, signals_to_write[sig])
+        comb_update_and_trace(sim)
 
 
 def comb_update_and_trace(sim):
