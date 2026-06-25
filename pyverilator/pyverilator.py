@@ -466,6 +466,11 @@ class PyVerilator:
             verilog_module_name = top_module_name
             extension = None
 
+        # Verilator names generated artifacts (V*.h, V*.mk, shared object) from
+        # the effective top module. If --top-module is provided, use that name
+        # consistently for all generated file lookups.
+        generated_module_name = top_module_name if top_module_name is not None else verilog_module_name
+
         builddir_is_tmp = False
         if build_dir is None:
             build_dir = tempfile.mkdtemp(prefix=verilog_module_name + "-")
@@ -521,7 +526,7 @@ class PyVerilator:
         inputs = []
         outputs = []
         internal_signals = []
-        verilator_h_file = os.path.join(build_dir, "V" + verilog_module_name + ".h")
+        verilator_h_file = os.path.join(build_dir, "V" + generated_module_name + ".h")
 
         def search_for_signal_decl(signal_type, line):
             # looks for VL_IN*, VL_OUT*, or VL_SIG* macros
@@ -561,7 +566,7 @@ class PyVerilator:
 
         # generate the C++ wrapper file
         verilator_cpp_wrapper_code = template_cpp.template_cpp(
-            verilog_module_name,
+            generated_module_name,
             inputs,
             outputs,
             internal_signals,
@@ -581,12 +586,12 @@ class PyVerilator:
             "-C",
             build_dir,
             "-f",
-            "V%s.mk" % verilog_module_name,
+            "V%s.mk" % generated_module_name,
             "CFLAGS=-fPIC -shared",
             "LDFLAGS=-fPIC -shared",
         ]
         launch_process_helper(make_args)
-        so_file = os.path.join(build_dir, "V" + verilog_module_name)
+        so_file = os.path.join(build_dir, "V" + generated_module_name)
         if builddir_is_tmp:
             # mark the build dir for removal upon destruction
             ret = cls(so_file, builddir_to_remove=build_dir, auto_eval=auto_eval)
