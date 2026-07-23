@@ -509,7 +509,7 @@ class PyVerilator:
             + verilog_path_args
             + [
                 "--CFLAGS",
-                "-fPIC --std=c++11",
+                "-fPIC --std=c++14",
                 "--trace",
                 "--trace-depth",
                 "%d" % trace_depth,
