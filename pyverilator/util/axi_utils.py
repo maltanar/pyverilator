@@ -109,6 +109,8 @@ def rtlsim_multi_io(
     liveness_threshold=10000,
     hook_preclk=None,
     hook_postclk=None,
+    clk_name="ap_clk",
+    clk2x_name="ap_clk2x",
 ):
     """Runs the pyverilator simulation by passing the input values to the simulation,
     toggle the clock and observing the execution time. Function contains also an
@@ -139,7 +141,7 @@ def rtlsim_multi_io(
     """
 
     if trace_file != "":
-        sim.start_vcd_trace(trace_file)
+        sim.start_vcd_trace(trace_file, auto_tracing=False)
 
     for outp in io_dict["outputs"]:
         _write_signal(sim, outp + sname + "TREADY", 1)
@@ -155,25 +157,44 @@ def rtlsim_multi_io(
     # output values after 100 cycles
     no_change_count = 0
 
+    # Dictionary that will hold the signals to drive to DUT
+    signals_to_write = {}
+
     while not (output_done):
+        if hook_preclk:
+            hook_preclk(sim)
+        # Toggle falling edge to arrive at a delta cycle before the rising edge
+        toggle_neg_edge(sim, clk_name=clk_name, clk2x_name=clk2x_name)
+        
+        # examine signals, decide how to act based on that but don't update yet
+        # so only _read_signal access in this block, no _write_signal
         for inp in io_dict["inputs"]:
             inputs = io_dict["inputs"][inp]
-            _write_signal(sim, inp + sname + "TVALID", 1 if len(inputs) > 0 else 0)
-            _write_signal(sim, inp + sname + "TDATA", inputs[0] if len(inputs) > 0 else 0)
-            if _read_signal(sim, inp + sname + "TREADY") == 1 and _read_signal(sim, inp + sname + "TVALID") == 1:
+            signal_name = inp + sname
+            if _read_signal(sim, signal_name + "TREADY") == 1 and _read_signal(sim, signal_name + "TVALID") == 1:
                 inputs = inputs[1:]
             io_dict["inputs"][inp] = inputs
 
         for outp in io_dict["outputs"]:
             outputs = io_dict["outputs"][outp]
-            if _read_signal(sim, outp + sname + "TREADY") == 1 and _read_signal(sim, outp + sname + "TVALID") == 1:
-                outputs = outputs + [_read_signal(sim, outp + sname + "TDATA")]
+            signal_name = outp + sname
+            if _read_signal(sim, signal_name + "TREADY") == 1 and _read_signal(sim, signal_name + "TVALID") == 1:
+                outputs = outputs + [_read_signal(sim, signal_name + "TDATA")]
                 output_count += 1
             io_dict["outputs"][outp] = outputs
 
-        if hook_preclk:
-            hook_preclk(sim)
-        toggle_clk(sim)
+        # update signals based on decisions in previous block, but don't examine anything
+        # so only _write_signal access in this block, no _read_signal
+        for inp in io_dict["inputs"]:
+            inputs = io_dict["inputs"][inp]
+            signal_name = inp + sname
+            signals_to_write[signal_name + "TVALID"] = 1 if len(inputs) > 0 else 0
+            signals_to_write[signal_name + "TDATA"] = inputs[0] if len(inputs) > 0 else 0
+
+        # Toggle rising edge to arrive at a delta cycle before the falling edge
+        toggle_pos_edge(
+            sim, clk_name=clk_name, clk2x_name=clk2x_name, signals_to_write=signals_to_write
+        )
         if hook_postclk:
             hook_postclk(sim)
 
@@ -227,23 +248,66 @@ def _write_signal(sim, signal_name, signal_value):
     sim.io[signal_name] = signal_value
 
 
-def reset_rtlsim(sim, rst_name="ap_rst_n", active_low=True, clk_name="ap_clk"):
-    """Sets reset input in pyverilator to zero, toggles the clock and set it
-    back to one"""
+def reset_rtlsim(
+    sim, rst_name="ap_rst_n", active_low=True, clk_name="ap_clk", clk2x_name="ap_clk2x"
+):
     _write_signal(sim, rst_name, 0 if active_low else 1)
-    toggle_clk(sim, clk_name=clk_name)
-    toggle_clk(sim, clk_name=clk_name)
-    _write_signal(sim, rst_name, 1 if active_low else 0)
-    toggle_clk(sim, clk_name=clk_name)
-    toggle_clk(sim, clk_name=clk_name)
+    for _ in range(2):
+        toggle_clk(sim, clk_name, clk2x_name)
+
+    signals_to_write = {}
+    signals_to_write[rst_name] = 1 if active_low else 0
+    toggle_clk(sim, clk_name, clk2x_name, signals_to_write)
+    toggle_clk(sim, clk_name, clk2x_name)
 
 
-def toggle_clk(sim, clk_name="ap_clk"):
+def toggle_clk(sim, clk_name="ap_clk", clk2x_name="ap_clk2x", signals_to_write={}):
     """Toggles the clock input in pyverilator once."""
-    _write_signal(sim, clk_name, 0)
+    toggle_neg_edge(sim, clk_name=clk_name, clk2x_name=clk2x_name)
+    toggle_pos_edge(
+        sim, clk_name=clk_name, clk2x_name=clk2x_name, signals_to_write=signals_to_write
+    )
+
+
+def toggle_neg_edge(sim, clk_name="ap_clk", clk2x_name="ap_clk2x"):
+    if clk2x_name in sim.io:
+        _write_signal(sim, clk_name, 0)
+        _write_signal(sim, clk2x_name, 1)
+        comb_update_and_trace(sim)
+        _write_signal(sim, clk2x_name, 0)
+        comb_update_and_trace(sim)
+    else:
+        _write_signal(sim, clk_name, 0)
+        comb_update_and_trace(sim)
+
+
+def toggle_pos_edge(sim, clk_name="ap_clk", clk2x_name="ap_clk2x", signals_to_write={}):
+    if clk2x_name in sim.io:
+        _write_signal(sim, clk_name, 1)
+        _write_signal(sim, clk2x_name, 1)
+        sim.eval()
+        # Write IO signals a delta cycle after rising edge
+        if bool(signals_to_write):  # if dict non-empty
+            for sig in signals_to_write.keys():
+                _write_signal(sim, sig, signals_to_write[sig])
+        comb_update_and_trace(sim)
+        _write_signal(sim, clk2x_name, 0)
+        comb_update_and_trace(sim)
+    else:
+        _write_signal(sim, clk_name, 1)
+        sim.eval()
+        # Write IO signals a delta cycle after rising edge
+        if bool(signals_to_write):  # if dict non-empty
+            for sig in signals_to_write.keys():
+                _write_signal(sim, sig, signals_to_write[sig])
+        comb_update_and_trace(sim)
+
+
+def comb_update_and_trace(sim):
+    do_trace = not (sim.vcd_trace is None)
     sim.eval()
-    _write_signal(sim, clk_name, 1)
-    sim.eval()
+    if do_trace:
+        sim.add_to_vcd_trace()
 
 
 def wait_for_handshake(sim, ifname, basename="s_axi_control_", dataname="DATA"):
