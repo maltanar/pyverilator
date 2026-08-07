@@ -155,21 +155,23 @@ def rtlsim_multi_io(
     # output values after 100 cycles
     no_change_count = 0
 
+    inp_idx_dict = {}
+    for inp in io_dict["inputs"]:
+        inp_idx_dict[inp] = 0
+
     while not (output_done):
         for inp in io_dict["inputs"]:
             inputs = io_dict["inputs"][inp]
-            _write_signal(sim, inp + sname + "TVALID", 1 if len(inputs) > 0 else 0)
-            _write_signal(sim, inp + sname + "TDATA", inputs[0] if len(inputs) > 0 else 0)
+            pending = inp_idx_dict[inp] < len(inputs)
+            _write_signal(sim, inp + sname + "TVALID", 1 if pending else 0)
+            _write_signal(sim, inp + sname + "TDATA", inputs[inp_idx_dict[inp]] if pending else 0)
             if _read_signal(sim, inp + sname + "TREADY") == 1 and _read_signal(sim, inp + sname + "TVALID") == 1:
-                inputs = inputs[1:]
-            io_dict["inputs"][inp] = inputs
+                inp_idx_dict[inp] += 1
 
         for outp in io_dict["outputs"]:
-            outputs = io_dict["outputs"][outp]
             if _read_signal(sim, outp + sname + "TREADY") == 1 and _read_signal(sim, outp + sname + "TVALID") == 1:
-                outputs = outputs + [_read_signal(sim, outp + sname + "TDATA")]
+                io_dict["outputs"][outp].append(_read_signal(sim, outp + sname + "TDATA"))
                 output_count += 1
-            io_dict["outputs"][outp] = outputs
 
         if hook_preclk:
             hook_preclk(sim)
